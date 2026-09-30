@@ -199,17 +199,64 @@ struct PendingPatch
 bool readSourceLine(ifstream& in, string& out)
 {
     // reads the next nonblank line
+    int ct;
+    while (in.read(reinterpret_cast<char*>(&ct), sizeof(ct))) {
+        out.resize(ct);
+        in.read(&out[0], ct);
+        if (out.find_first_not_of(" \n\t\r") == string::npos) {
+            return true;
+        }
+    }
+    return false;
 }
 string firstWord(const string& line)
 {
+    string out;
+    for (int i = 0; i < line.length(); i++) {
+        if (line[i] == ' ') break;
+        out += line[i];
+    }
+    return out;
     // returns first word from the input string
 }
 string secondWord(const string& line)
 {
+    string out;
+    int i = 0; 
+    for (; i < line.length() && line[i] != ' '; i++);
+    if (i == line.length()) return out;
+    i++;
+    for (; i < line.length(); i++) {
+        if (line[i] == ' ') break;
+        out += line[i];
+    }
+    return out;
     // returns the second word
 }
 bool validateProgram(const char* sourcePath)
 {
+    ifstream in;
+    in.open(sourcePath, ios::binary);
+    if (!in.is_open()) return false;
+    Stack<string> s;
+    string temp;
+    while (readSourceLine(in, temp)) {
+        string first = firstWord(temp);
+        if (first == "func") {
+            if (s.isEmpty()) {
+                s.push("func");
+                continue;
+            }
+            else return false;
+        }
+        else if (first == "func_end") {
+            if (s.isEmpty()) return false;
+            else s.pop();
+        }
+        temp.clear();
+    }
+    in.close();
+    return s.isEmpty();
     // for each func defined there should be exactly one func_end and no nested funcs allowed - 
 }
 
