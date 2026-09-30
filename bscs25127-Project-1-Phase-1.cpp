@@ -115,16 +115,34 @@ public:
     // Implement these functions
     Timeline()
     {
+        head = tail = nullptr;
+        stepCount = 0;
     }
     void record(Snapshot* s)
     {
+        TimelineNode* n = new TimelineNode;
+        n->data = s;
+        n->next = nullptr;
+        n->prev = nullptr;
+        if (stepCount == 0) {
+            head = tail = n;
+        }
+        else {
+            TimelineNode* temp = tail;
+            tail = n;
+            n->prev = temp;
+            temp->next = n;
+        }
+        stepCount++;
         // add record in the timeline
     }
     TimelineNode* begin()
     {
+        return head;
     }
     int32_t getStepCount()
     {
+        return stepCount;
     }
 };
 
