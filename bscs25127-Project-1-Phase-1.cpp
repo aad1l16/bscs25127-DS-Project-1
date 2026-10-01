@@ -282,7 +282,7 @@ int64_t readResolveRecord(FILE* f, string& outText)
     return offset;
     // reads one record at the current position and advances past it, returns the offset field - the raw line text comes back untouched in outText.
 }
-int64_t resolveProgram(const char* sourcePath, const char* resolveBinPath)
+int64_t resolveProgram(const char* sourcePath, const char* resolveBinPath)  
 {
     FuncEntry funcArray[MAX_FUNCS];
     int32_t funcCount = 0;
@@ -382,16 +382,161 @@ int32_t tokenizeLine(const string& line, Token tokens[], int32_t maxTokens)
     // instruction set = [func, func_end, call, set, add, sub, mul and div]
     // next word is identifier like name of a function, variable name
     // after identifier all are the params/arg, space separated
+    int idx = 0;
+    string temp;
+    for (int i = 0; line[i] != '\0'; i++) {
+        if (idx == maxTokens) throw runtime_error("Error : Maximum Token limit exceeded.");
+        if (line[i] == ' ') {
+            if (idx == 0) tokens[idx].type = KEYWORD;
+            if (idx == 1) tokens[idx].type = IDENTIFIER;
+            if(idx > 1) tokens[idx].type = PARAM;
+            tokens[idx++].text = temp;
+            temp.clear();
+            continue;
+        }
+        temp += line[i];
+    }
+    if (!temp.empty()) {
+        if (idx == maxTokens) throw runtime_error("Error : Maximum Token limit exceeded.");
+        if (idx == 0) tokens[idx].type = KEYWORD;
+        if (idx == 1) tokens[idx].type = IDENTIFIER;
+        if (idx > 1) tokens[idx].type = PARAM;
+        tokens[idx++].text = temp;
+    }
+    return idx;
 }
 Snapshot* buildSnapshot(Stack<Frame>& callStack)
 {
     // build the snapshot based on the callStack given
+    Snapshot* ret = new Snapshot;
+    ret->stackDepth = callStack.snapshot_into(ret->callStack, MAX_STACK_DEPTH);
+    return ret;
+}
+Variable* findVariable(Frame* currFrame, const string& varName) {
+    for (int i = 0; i < currFrame->localCount; i++) {
+        if (currFrame->locals[i].name == varName) return &currFrame->locals[i];
+    }
+    for (int i = 0; i < currFrame->argc; i++) {
+        if (currFrame->argv[i].name == varName) return &currFrame->argv[i];
+    }
+    return nullptr;
 }
 void executeProgram(const char* resolveBinPath, int64_t mainOffset, Timeline& timeline)
 {
     // initialize the call stack
     // make the main frame
     // push main frame on the call stack
+    Stack<Frame> callStack;
+    Frame temp;
+    temp.argc = 0; 
+    temp.localCount = 0;
+    temp.returnLine = -1;
+    callStack.push(temp);
+    FILE* file = fopen(resolveBinPath, "rb");
+    if (!file) throw runtime_error("File could not be opened.");
+    fseek(file, mainOffset, 0);
+    string str;
+    while (!feof(file)) {
+        int64_t offset = readResolveRecord(file, str);
+        if (str.empty()) break;
+        Token tokens[MAX_TOKENS];
+        int tokCt;
+        try {
+            tokCt = tokenizeLine(str, tokens, MAX_TOKENS);
+            
+            if (tokens[0].text == "set") {
+                Frame& currFrame = callStack.peek();
+                Variable* currVariable = findVariable(&currFrame, tokens[1].text);
+                int val = stoi(tokens[2].text);
+                if (currVariable != nullptr) {
+                    currVariable->value = val;
+                }
+                else {
+                    if (currFrame.localCount >= MAX_VARS_PER_FRAME) throw runtime_error("Error : Maximum Local Variables Limit Exceeded.");
+                    currFrame.locals[currFrame.localCount].name = tokens[1].text;
+                    currFrame.locals[currFrame.localCount].value = val;
+                    currFrame.localCount++;
+                }
+            }
+            else if (tokens[0].text == "add") {
+                Frame& currFrame = callStack.peek();
+                Variable* a = findVariable(&currFrame, tokens[1].text);
+                Variable* b = findVariable(&currFrame, tokens[2].text);
+                if (a == nullptr) throw runtime_error("Error : Variable " + tokens[1].text + " is not defined.");
+                int val;
+                if (b == nullptr) val = stoi(tokens[2].text);
+                else val = b->value;
+                a->value += val;
+            }
+            else if (tokens[0].text == "sub") {
+                Frame& currFrame = callStack.peek();
+                Variable* a = findVariable(&currFrame, tokens[1].text);
+                Variable* b = findVariable(&currFrame, tokens[2].text);
+                if (a == nullptr) throw runtime_error("Error : Variable " + tokens[1].text + " is not defined.");
+                int val;
+                if (b == nullptr) val = stoi(tokens[2].text);
+                else val = b->value;
+                a->value -= val;
+            }
+            else if (tokens[0].text == "mul") {
+                Frame& currFrame = callStack.peek();
+                Variable* a = findVariable(&currFrame, tokens[1].text);
+                Variable* b = findVariable(&currFrame, tokens[2].text);
+                if (a == nullptr) throw runtime_error("Error : Variable " + tokens[1].text + " is not defined.");
+                int val;
+                if (b == nullptr) val = stoi(tokens[2].text);
+                else val = b->value;
+                a->value *= val;
+            }
+            else if (tokens[0].text == "div") {
+                Frame& currFrame = callStack.peek();
+                Variable* a = findVariable(&currFrame, tokens[1].text);
+                Variable* b = findVariable(&currFrame, tokens[2].text);
+                if (a == nullptr) throw runtime_error("Error : Variable " + tokens[1].text + " is not defined.");
+                int val;
+                if (b == nullptr) val = stoi(tokens[2].text);
+                else val = b->value;
+                if (val == 0) throw runtime_error("Error : Division by 0 is undefined.");
+                a->value /= val;
+            }
+            else if (tokens[0].text == "call") {
+                Frame newFrame;
+                newFrame.func_name = tokens[1].text;
+                newFrame.argc = 0;
+                newFrame.localCount = 0;
+                newFrame.returnLine = ftell(file);
+                Frame& currFrame = callStack.peek();
+                for (int i = 2; i < tokCt; i++) {
+                    Variable* argVar = findVariable(&currFrame, tokens[i].text);
+                    int val;
+                    if (argVar == nullptr) val = stoi(tokens[i].text);
+                    else val = argVar->value;
+                    newFrame.argv[newFrame.argc++].value = val;
+                }
+                callStack.push(newFrame);
+                fseek(file, offset, 0);
+            }
+            else if (tokens[0].text == "func") {
+                Frame& currFrame = callStack.peek();
+                
+                for (int i = 2; i < tokCt; i++) {
+                    currFrame.argv[i - 2].name = tokens[i].text;
+                }
+            }
+            else if (tokens[0].text == "func_end") {
+                Frame poppedFrame = callStack.pop();
+
+                if (poppedFrame.returnLine == -1) break;
+
+                fseek(file, poppedFrame.returnLine, 0);
+            }
+            timeline.record(buildSnapshot(callStack));
+        }
+        catch (const std::exception& e) {
+            cout << e.what() << endl;
+            return;
+        }
+    }
 
     // implementation:
     // execute line by line, and according to the keyword perform action
@@ -409,19 +554,29 @@ void writeTdbg(Timeline& timeline, const char* tdbgPath)
 // main section
 int32_t main()
 {
-
-    if (!validateProgram("source.bin"))
-    {
-        // send an error response instead of a .tdbg file
-        return 1;
+    try {
+        if (!validateProgram("source.bin"))
+        {
+            // send an error response instead of a .tdbg file
+            return 1;
+        }
     }
+    catch (const std::exception& e) {
+        cout << e.what() << endl;
+        return -1;
+    }
+    
+    try {
+        int64_t mainOffset = resolveProgram("source.bin", "resolve.bin");
+        Timeline timeline;
+        executeProgram("resolve.bin", mainOffset, timeline);
 
-    int64_t mainOffset = resolveProgram("source.bin", "resolve.bin");
+        writeTdbg(timeline, "session.tdbg");
 
-    Timeline timeline;
-    executeProgram("resolve.bin", mainOffset, timeline);
-
-    writeTdbg(timeline, "session.tdbg");
-
-    return 0;
+        return 0;
+    }
+    catch (const std::exception& e) {
+        cout << e.what() << endl;
+        return -1;
+    }
 }
