@@ -1,4 +1,4 @@
-// ======================= TIME-TRAVEL DEBUGGER - SERVER TEMPLATE =======================
+﻿// ======================= TIME-TRAVEL DEBUGGER - SERVER TEMPLATE =======================
 
 // Pipeline this file implements, top to bottom:
 //   0. Receive  -- stream the client's .trace bytes straight to source.bin on disk
@@ -6,14 +6,14 @@
 //   2. Pass 0X1   -- resolve(): copy EVERY source line into resolve.bin as [offset][size][string], then patch CALL targets.
 //   3. Pass 0X2   -- execute resolve.bin: tokenize ONE line at a time, update the call stack, take a snapshot -> Timeline
 //   4. Pass 0X3   -- serialize Timeline -> session.tdbg(header + snapshot records + dense index)
-
+#define _CRT_SECURE_NO_WARNINGS
 
 #include <iostream>
 #include <string>
 #include <cstdint>
 #include <fstream>
-//#include <unistd.h>
-//#include <sys/socket.h>
+#include <unistd.h>
+#include <sys/socket.h>
 #include <cstdint>
 #include <cstdio>
 using namespace std;
@@ -203,7 +203,7 @@ bool readSourceLine(ifstream& in, string& out)
     while (in.read(reinterpret_cast<char*>(&ct), sizeof(ct))) {
         out.resize(ct);
         in.read(&out[0], ct);
-        if (out.find_first_not_of(" \n\t\r") == string::npos) {
+        if (out.find_first_not_of(" \n\t\r") != string::npos) {
             return true;
         }
     }
@@ -428,6 +428,7 @@ void executeProgram(const char* resolveBinPath, int64_t mainOffset, Timeline& ti
     // push main frame on the call stack
     Stack<Frame> callStack;
     Frame temp;
+    temp.func_name = "main";
     temp.argc = 0; 
     temp.localCount = 0;
     temp.returnLine = -1;
@@ -533,8 +534,7 @@ void executeProgram(const char* resolveBinPath, int64_t mainOffset, Timeline& ti
             timeline.record(buildSnapshot(callStack));
         }
         catch (const std::exception& e) {
-            cout << e.what() << endl;
-            return;
+            throw;
         }
     }
 
@@ -550,25 +550,80 @@ void writeTdbg(Timeline& timeline, const char* tdbgPath)
     // placing each snapshot in the file while maintaining the index(starting point of each nth snapshot)
     // after timeline add the index array i the file
     // update the header
+    FILE* file = fopen(tdbgPath, "wb");
+    if (!file) throw runtime_error("File " + string(tdbgPath) + " could not be opened.");
+    TTDBHeader header;
+    header.magic[0] = 'T';
+    header.magic[1] = 'T';
+    header.magic[2] = 'D';
+    header.magic[3] = 'B';
+    header.version = 1;
+    header.stepCount = timeline.getStepCount();
+    header.indexOffset = 0;
+    fwrite(header.magic, sizeof(char), 4, file);
+    fwrite(&header.version, sizeof(int32_t), 1, file);
+    fwrite(&header.stepCount, sizeof(int32_t), 1, file);
+    fwrite(&header.indexOffset, sizeof(int64_t), 1, file);
+    int64_t* indexArr = new int64_t[header.stepCount];
+    int currIdx = 0;
+    
+    for (TimelineNode* curr = timeline.begin(); curr != nullptr; curr = curr->next) {
+        indexArr[currIdx] = ftell(file);
+        int32_t depth = curr->data->stackDepth;
+        fwrite(&depth, sizeof(int32_t), 1, file);
+        for (int i = 0; i < depth; i++) {
+            Frame currFrame = curr->data->callStack[i];
+            int32_t len = currFrame.func_name.length();
+            fwrite(&len, sizeof(int32_t), 1, file);
+            fwrite(currFrame.func_name.c_str(), sizeof(char), len, file);
+            fwrite(&currFrame.argc, sizeof(int32_t), 1, file);
+            for (int j = 0; j < currFrame.argc; j++) {
+                len = currFrame.argv[j].name.length();
+                fwrite(&len, sizeof(int32_t), 1, file);
+                fwrite(currFrame.argv[j].name.c_str(), sizeof(char), len, file);
+                fwrite(&currFrame.argv[j].value, sizeof(int32_t), 1, file);
+            }
+            fwrite(&currFrame.localCount, sizeof(int32_t), 1, file);
+            for (int j = 0; j < currFrame.localCount; j++) {
+                len = currFrame.locals[j].name.length();
+                fwrite(&len, sizeof(int32_t), 1, file);
+                fwrite(currFrame.locals[j].name.c_str(), sizeof(char), len, file);
+                fwrite(&currFrame.locals[j].value, sizeof(int32_t), 1, file);
+            }
+        }
+        currIdx++;
+    }
+
+    int64_t offset = ftell(file);
+
+    fwrite(indexArr, sizeof(int64_t), header.stepCount, file);
+
+    fseek(file, 0, 0);
+
+    header.indexOffset = offset;
+
+    fwrite(header.magic, sizeof(char), 4, file);
+    fwrite(&header.version, sizeof(int32_t), 1, file);
+    fwrite(&header.stepCount, sizeof(int32_t), 1, file);
+    fwrite(&header.indexOffset, sizeof(int64_t), 1, file);
+
+    fclose(file);
+
+    delete[] indexArr;
 }
 // main section
 int32_t main()
 {
-    try {
-        if (!validateProgram("source.bin"))
-        {
-            // send an error response instead of a .tdbg file
-            return 1;
-        }
+    if (!validateProgram("source.bin"))
+    {
+        // send an error response instead of a .tdbg file
+        return 1;
     }
-    catch (const std::exception& e) {
-        cout << e.what() << endl;
-        return -1;
-    }
-    
+
+    Timeline timeline;
     try {
         int64_t mainOffset = resolveProgram("source.bin", "resolve.bin");
-        Timeline timeline;
+
         executeProgram("resolve.bin", mainOffset, timeline);
 
         writeTdbg(timeline, "session.tdbg");
@@ -577,6 +632,8 @@ int32_t main()
     }
     catch (const std::exception& e) {
         cout << e.what() << endl;
+        writeTdbg(timeline, "session.tdbg");
         return -1;
     }
 }
+
