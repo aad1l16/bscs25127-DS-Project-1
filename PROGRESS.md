@@ -9,3 +9,6 @@ Implemented Stage 3 : Pass 0x2
 3rd Session
 Date : 2 October
 Implemented Stage 4 : Pass 0x3
+4th Session
+Date : 4 October
+Minor changes/Code improvements

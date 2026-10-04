@@ -49,6 +49,13 @@ public:
         top = nullptr;
         count = 0;
     }
+    ~Stack(){
+        while(top){
+            Node* t = top->next;
+            delete top;
+            top = t;
+        }
+    }
     void push(const T& val)
     {
         if (count >= MAX_STACK_DEPTH) throw overflow_error("Stack is full.");
@@ -118,6 +125,14 @@ public:
         head = tail = nullptr;
         stepCount = 0;
     }
+    ~Timeline(){
+        while(head){
+            TimelineNode* t = head->next;
+            delete head->data;
+            delete head;
+            head = t;
+        }
+    }
     void record(Snapshot* s)
     {
         TimelineNode* n = new TimelineNode;
@@ -177,7 +192,8 @@ void writeHeader(FILE* f, const TTDBHeader& h)
 {
     fwrite(h.magic, 1, 4, f);
     fwrite(&h.version, sizeof(int32_t), 1, f);
-
+    fwrite(&h.stepCount, sizeof(int32_t), 1, f);
+    fwrite(&h.indexOffset, sizeof(int64_t), 1, f);
     // placeholder for other two data members
 }
 
@@ -212,7 +228,9 @@ bool readSourceLine(ifstream& in, string& out)
 string firstWord(const string& line)
 {
     string out;
-    for (int i = 0; i < line.length(); i++) {
+    int i = 0;
+    for(; i < line.length() && line[i] == ' '; i++);
+    for (; i < line.length(); i++) {
         if (line[i] == ' ') break;
         out += line[i];
     }
@@ -220,12 +238,13 @@ string firstWord(const string& line)
     // returns first word from the input string
 }
 string secondWord(const string& line)
-{
+{   
     string out;
-    int i = 0; 
+    int i = 0;
+    for(; i < line.length() && line[i] == ' '; i++);
     for (; i < line.length() && line[i] != ' '; i++);
+    for(; i < line.length() && line[i] == ' '; i++);
     if (i == line.length()) return out;
-    i++;
     for (; i < line.length(); i++) {
         if (line[i] == ' ') break;
         out += line[i];
@@ -247,10 +266,16 @@ bool validateProgram(const char* sourcePath)
                 s.push("func");
                 continue;
             }
-            else return false;
+            else {
+                in.close();
+                return false;
+            }
         }
         else if (first == "func_end") {
-            if (s.isEmpty()) return false;
+            if (s.isEmpty()) {
+                in.close();
+                return false;
+            }
             else s.pop();
         }
         temp.clear();
@@ -274,9 +299,15 @@ int64_t writeResolveRecord(FILE* f, int64_t offsetField, const string& text)
 int64_t readResolveRecord(FILE* f, string& outText)
 {
     int64_t offset;
-    fread(&offset, sizeof(int64_t), 1, f);
+    if(fread(&offset, sizeof(int64_t), 1, f) != 1){
+        outText.clear();
+        return -1;
+    }
     int32_t len;
-    fread(&len, sizeof(int32_t), 1, f);
+    if (fread(&len, sizeof(int32_t), 1, f) != 1){
+        outText.clear();
+        return -1;
+    }
     outText.resize(len);
     fread(&outText[0], sizeof(char), len, f);
     return offset;
@@ -305,11 +336,13 @@ int64_t resolveProgram(const char* sourcePath, const char* resolveBinPath)
         int64_t bytesWritten = writeResolveRecord(file, -1, temp);
         first = firstWord(temp);
         if (first == "func") {
+            if(funcCount >= MAX_FUNCS) throw runtime_error("Error : Maximum Functions limit exceeded");
             funcArray[funcCount].funcName = secondWord(temp);
             funcArray[funcCount].byteOffsetInResolveBin = offset;
             funcCount++;
         }
         else if (first == "call") {
+            if(patchCount >= MAX_PATCHES) throw runtime_error("Error : Maximum Patches limit exceeded");
             patches[patchCount].byteOffsetOfOffsetField = offset;
             patches[patchCount].targetFuncName = secondWord(temp);
             patchCount++;
@@ -387,6 +420,7 @@ int32_t tokenizeLine(const string& line, Token tokens[], int32_t maxTokens)
     for (int i = 0; line[i] != '\0'; i++) {
         if (idx == maxTokens) throw runtime_error("Error : Maximum Token limit exceeded.");
         if (line[i] == ' ') {
+            if(temp.empty()) continue;
             if (idx == 0) tokens[idx].type = KEYWORD;
             if (idx == 1) tokens[idx].type = IDENTIFIER;
             if(idx > 1) tokens[idx].type = PARAM;
@@ -420,6 +454,7 @@ Variable* findVariable(Frame* currFrame, const string& varName) {
         if (currFrame->argv[i].name == varName) return &currFrame->argv[i];
     }
     return nullptr;
+    //Helper function to check whether the variable being worked on exists. If it does returns the pointer to the variable else returns nullptr.
 }
 void executeProgram(const char* resolveBinPath, int64_t mainOffset, Timeline& timeline)
 {
@@ -434,7 +469,7 @@ void executeProgram(const char* resolveBinPath, int64_t mainOffset, Timeline& ti
     temp.returnLine = -1;
     callStack.push(temp);
     FILE* file = fopen(resolveBinPath, "rb");
-    if (!file) throw runtime_error("File could not be opened.");
+    if (!file) throw runtime_error("File " + string(resolveBinPath) + " could not be opened.");
     fseek(file, mainOffset, 0);
     string str;
     while (!feof(file)) {
@@ -446,6 +481,7 @@ void executeProgram(const char* resolveBinPath, int64_t mainOffset, Timeline& ti
             tokCt = tokenizeLine(str, tokens, MAX_TOKENS);
             
             if (tokens[0].text == "set") {
+                if(tokCt < 3) throw runtime_error("Error : Incorrect " + tokens[0].text + " syntax.");
                 Frame& currFrame = callStack.peek();
                 Variable* currVariable = findVariable(&currFrame, tokens[1].text);
                 int val = stoi(tokens[2].text);
@@ -460,6 +496,7 @@ void executeProgram(const char* resolveBinPath, int64_t mainOffset, Timeline& ti
                 }
             }
             else if (tokens[0].text == "add") {
+                if(tokCt < 3) throw runtime_error("Error : Incorrect " + tokens[0].text + " syntax.");
                 Frame& currFrame = callStack.peek();
                 Variable* a = findVariable(&currFrame, tokens[1].text);
                 Variable* b = findVariable(&currFrame, tokens[2].text);
@@ -470,6 +507,7 @@ void executeProgram(const char* resolveBinPath, int64_t mainOffset, Timeline& ti
                 a->value += val;
             }
             else if (tokens[0].text == "sub") {
+                if(tokCt < 3) throw runtime_error("Error : Incorrect " + tokens[0].text + " syntax.");
                 Frame& currFrame = callStack.peek();
                 Variable* a = findVariable(&currFrame, tokens[1].text);
                 Variable* b = findVariable(&currFrame, tokens[2].text);
@@ -480,6 +518,7 @@ void executeProgram(const char* resolveBinPath, int64_t mainOffset, Timeline& ti
                 a->value -= val;
             }
             else if (tokens[0].text == "mul") {
+                if(tokCt < 3) throw runtime_error("Error : Incorrect " + tokens[0].text + " syntax.");
                 Frame& currFrame = callStack.peek();
                 Variable* a = findVariable(&currFrame, tokens[1].text);
                 Variable* b = findVariable(&currFrame, tokens[2].text);
@@ -490,6 +529,7 @@ void executeProgram(const char* resolveBinPath, int64_t mainOffset, Timeline& ti
                 a->value *= val;
             }
             else if (tokens[0].text == "div") {
+                if(tokCt < 3) throw runtime_error("Error : Incorrect " + tokens[0].text + " syntax.");
                 Frame& currFrame = callStack.peek();
                 Variable* a = findVariable(&currFrame, tokens[1].text);
                 Variable* b = findVariable(&currFrame, tokens[2].text);
@@ -501,6 +541,7 @@ void executeProgram(const char* resolveBinPath, int64_t mainOffset, Timeline& ti
                 a->value /= val;
             }
             else if (tokens[0].text == "call") {
+                if(tokCt < 2) throw runtime_error("Error : Function name missing.");
                 Frame newFrame;
                 newFrame.func_name = tokens[1].text;
                 newFrame.argc = 0;
@@ -519,12 +560,15 @@ void executeProgram(const char* resolveBinPath, int64_t mainOffset, Timeline& ti
             }
             else if (tokens[0].text == "func") {
                 Frame& currFrame = callStack.peek();
+
+                int expArgc = tokCt - 2;
+                if(currFrame.argc != expArgc) throw runtime_error("Error : Argument Count mismatch for " + currFrame.func_name);
                 
                 for (int i = 2; i < tokCt; i++) {
                     currFrame.argv[i - 2].name = tokens[i].text;
                 }
             }
-            else if (tokens[0].text == "func_end") {
+            else if (tokens[0].text == "func_end") {  
                 Frame poppedFrame = callStack.pop();
 
                 if (poppedFrame.returnLine == -1) break;
@@ -534,10 +578,11 @@ void executeProgram(const char* resolveBinPath, int64_t mainOffset, Timeline& ti
             timeline.record(buildSnapshot(callStack));
         }
         catch (const std::exception& e) {
+            fclose(file);
             throw;
         }
     }
-
+    fclose(file);
     // implementation:
     // execute line by line, and according to the keyword perform action
 }
@@ -560,10 +605,7 @@ void writeTdbg(Timeline& timeline, const char* tdbgPath)
     header.version = 1;
     header.stepCount = timeline.getStepCount();
     header.indexOffset = 0;
-    fwrite(header.magic, sizeof(char), 4, file);
-    fwrite(&header.version, sizeof(int32_t), 1, file);
-    fwrite(&header.stepCount, sizeof(int32_t), 1, file);
-    fwrite(&header.indexOffset, sizeof(int64_t), 1, file);
+    writeHeader(file, header);
     int64_t* indexArr = new int64_t[header.stepCount];
     int currIdx = 0;
     
@@ -602,10 +644,7 @@ void writeTdbg(Timeline& timeline, const char* tdbgPath)
 
     header.indexOffset = offset;
 
-    fwrite(header.magic, sizeof(char), 4, file);
-    fwrite(&header.version, sizeof(int32_t), 1, file);
-    fwrite(&header.stepCount, sizeof(int32_t), 1, file);
-    fwrite(&header.indexOffset, sizeof(int64_t), 1, file);
+    writeHeader(file, header);
 
     fclose(file);
 
