@@ -12,3 +12,6 @@ Implemented Stage 4 : Pass 0x3
 4th Session
 Date : 4 October
 Minor changes/Code improvements
+%th Session
+Date : 16 October
+Final Code Review, Potential error fixes

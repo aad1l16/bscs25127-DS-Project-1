@@ -9,6 +9,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <cstdint>
 #include <fstream>
@@ -336,13 +337,19 @@ int64_t resolveProgram(const char* sourcePath, const char* resolveBinPath)
         int64_t bytesWritten = writeResolveRecord(file, -1, temp);
         first = firstWord(temp);
         if (first == "func") {
-            if(funcCount >= MAX_FUNCS) throw runtime_error("Error : Maximum Functions limit exceeded");
+            if(funcCount >= MAX_FUNCS) {
+                fclose(file);
+                throw runtime_error("Error : Maximum Functions limit exceeded");
+            }
             funcArray[funcCount].funcName = secondWord(temp);
             funcArray[funcCount].byteOffsetInResolveBin = offset;
             funcCount++;
         }
         else if (first == "call") {
-            if(patchCount >= MAX_PATCHES) throw runtime_error("Error : Maximum Patches limit exceeded");
+            if(patchCount >= MAX_PATCHES) {
+                fclose(file);
+                throw runtime_error("Error : Maximum Patches limit exceeded");
+            }
             patches[patchCount].byteOffsetOfOffsetField = offset;
             patches[patchCount].targetFuncName = secondWord(temp);
             patchCount++;
@@ -675,4 +682,3 @@ int32_t main()
         return -1;
     }
 }
-
