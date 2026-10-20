@@ -18,3 +18,6 @@ Final Code Review, Potential error fixes
 6th Session
 Date : 20 October
 Queue Implementation, and other functions implemented, Open/Close TBDG, readSnapshot, moveBy functions. helper functions added.
+7th Session
+Date : 21 October
+Session 7 : Implemented Client.cpp functions, showCurrent, printSnapshot, closeSession, initSession, runCommand. Updated helper.h

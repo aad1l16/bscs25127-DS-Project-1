@@ -364,47 +364,6 @@ int64_t resolveProgram(const char* sourcePath, const char* resolveBinPath)
 }
 
 // PASS 0x2: EXECUTION (tokenization happens here)
-enum TokenType
-{
-    KEYWORD,
-    IDENTIFIER,
-    PARAM
-};
-struct Token
-{
-    TokenType type;
-    string text;
-};
-int32_t tokenizeLine(const string& line, Token tokens[], int32_t maxTokens)
-{
-    // first word is always a instruction keyword
-    // instruction set = [func, func_end, call, set, add, sub, mul and div]
-    // next word is identifier like name of a function, variable name
-    // after identifier all are the params/arg, space separated
-    int idx = 0;
-    string temp;
-    for (int i = 0; line[i] != '\0'; i++) {
-        if (idx == maxTokens) throw runtime_error("Error : Maximum Token limit exceeded.");
-        if (line[i] == ' ') {
-            if(temp.empty()) continue;
-            if (idx == 0) tokens[idx].type = KEYWORD;
-            if (idx == 1) tokens[idx].type = IDENTIFIER;
-            if(idx > 1) tokens[idx].type = PARAM;
-            tokens[idx++].text = temp;
-            temp.clear();
-            continue;
-        }
-        temp += line[i];
-    }
-    if (!temp.empty()) {
-        if (idx == maxTokens) throw runtime_error("Error : Maximum Token limit exceeded.");
-        if (idx == 0) tokens[idx].type = KEYWORD;
-        if (idx == 1) tokens[idx].type = IDENTIFIER;
-        if (idx > 1) tokens[idx].type = PARAM;
-        tokens[idx++].text = temp;
-    }
-    return idx;
-}
 Snapshot* buildSnapshot(Stack<Frame>& callStack)
 {
     // build the snapshot based on the callStack given

@@ -57,23 +57,27 @@ bool recvAll(int sock, char *buf, size_t n)
 {
     // recv() can return fewer bytes than asked for, so keep calling it until exactly n bytes are read.
     // Return false if the connection closes or fails before n bytes arrive.
+    return false;
 }
 bool sendAll(int sock, const char *buf, size_t n)
 {
     // send() can send fewer bytes than asked for, so keep calling it until all n bytes are sent.
     // Use the flag MSG_NOSIGNAL. Return false if the connection fails.
+    return false;
 }
 
 int connectToHost(const char *host, int port)
 {
     // Create a TCP socket and connect it to host:port.
     // Return the socket, or -1 if the connection fails.
+    return false;
 }
 bool uploadSource(int sock, const char *sourcePath)
 {
     // have to do checksum and then send
     // When the file is finished, call shutdown(sock, SHUT_WR). This is how the server knows the string is complete.
     // Return false if the file cannot be opened or any send fails.
+    return false;
 }
 bool receiveResponse(int sock, const char *outTdbgPath, string &outError)
 {
@@ -82,6 +86,7 @@ bool receiveResponse(int sock, const char *outTdbgPath, string &outError)
     // Status 1: collect the payload into outError. Status 0: write the payload to the file.
     // At the end call verify(). If it fails, delete the file, set outError to
     // "checksum mismatch, response corrupted" and return false.
+    return false;
 }
 
 // =============================================================================================
@@ -159,25 +164,38 @@ Snapshot *readSnapshotAt(TdbgReader &r, int32_t step)
 
 void initSession(DebugSession &s)
 {
-   
+    s.active_flag = false;
+    s.currentStep = 0;
+    s.reader.file_index = -1;
 }
 void closeSession(DebugSession &s)
 {
     // If active, call closeTdbg(s.reader). Then set active = false.
     // Called when the user types quit and when the input ends.
+    if(s.active_flag){
+        closeTdbg(s.reader);
+        s.active_flag = false;
+    }
 }
 
 // =============================================================================================
 // PART D: THE COMMANDS
 // =============================================================================================
 
-void printSnapshot(int32_t step, int32_t totalSteps, const Snapshot &s); // defined in Part E
+void printSnapshot(int32_t step, int32_t totalSteps, const Snapshot &s);// defined in Part E
 
 bool showCurrent(DebugSession &s)
 {
     // Read the snapshot at s.currentStep, call printSnapshot, delete the snapshot.
-    // If readSnapshotAt returns nullptr, print "damaged .tdbg file" and return false.\
-    
+    // If readSnapshotAt returns nullptr, print "damaged .tdbg file" and return false.
+    Snapshot* snap = readSnapshotAt(s.reader, s.currentStep);
+    if(!snap) {
+        cout << "\ndamaged .tdbg file\n";
+        return false;
+    }
+    printSnapshot(s.currentStep, s.reader.header.stepCount, *snap);
+    delete snap;
+    return true;
 }
 bool moveBy(DebugSession &s, int32_t delta)
 {
@@ -197,6 +215,20 @@ bool cmdStart(DebugSession &s, const string &sourcePath)
     // 4. Only now close the old reader (if s.active), then put the new reader into s,
     //    set s.currentStep = 0 and s.active = true.
     // 5. Show step 1 with showCurrent(s).
+    
+    // TdbgReader r;
+    // if (!openTdbg(TDBG_FILE, r)){
+    //     cout << "\nserver sent a damaged .tdbg file\n";
+    //     return false;
+    // }
+    // if(s.active_flag){
+    //     closeTdbg(s.reader);
+    // }
+    // s.reader = r;
+    // s.currentStep = 0;
+    // s.active_flag = true;
+    // showCurrent(s);
+    // return true;
 }
 bool cmdNext(DebugSession &s) {
     return moveBy(s, 1);
@@ -217,15 +249,45 @@ bool cmdJmpPrv(DebugSession &s, int32_t n) {
 
 void printSnapshot(int32_t step, int32_t totalSteps, const Snapshot &s)
 {
+    cout << "\nCurrent Step : " << step;
+    cout << "\nTotal Steps : " << totalSteps;
+    for(int i = 0; i < s.stackDepth; i++){
+        cout << "\nFunction " << i + 1;
+        cout << "\nFunction Name : " << s.callStack[i].func_name;
+        cout << "\nArguments : ";
+        for(int j = 0; j < s.callStack[i].argc; j++){
+            cout << endl << j + 1 << ". " << s.callStack[i].argv[j].name << " " << s.callStack[i].argv[j].value; 
+        }
+        cout << "\nReturn Line : " << s.callStack[i].returnLine;
+        cout << "\nLocals : ";
+        for(int j = 0; j < s.callStack[i].localCount; j++){
+            cout << endl << j + 1 << ". " << s.callStack[i].locals[j].name << " " << s.callStack[i].locals[j].value; 
+        }
+    }
 }
 void printHelp()
 {
     // Print the commands
+    cout << "\nCommands : ";
+    cout << "\nstart <file_name> -- Connects to server, compiles/runs the source file, loads generated .tdbg file.";
+    cout << "\nnext -- Steps forward to next state.";
+    cout << "\nprv -- Steps backward to previous state.";
+    cout << "\njmp next <n> -- Jumps forward by n steps (n must be a positive integer).";
+    cout << "\njmp prv <n> -- Jumps backwards by n steps (n must be a positive integer).";
+    cout << "\nhelp -- Prints this help menu.";
+    cout << "\nquit, exit -- Exits the debugger session.";
 }
 
 // =============================================================================================
 // PART F: THE INFINITE LOOP
 // =============================================================================================
+
+void shift_left(Token tokens[], int& tokCt){
+    for(int i = 0; i < tokCt - 1; i++){
+        tokens[i] = tokens[i + 1];
+    }
+    tokCt--;
+}
 
 bool runCommand(DebugSession &s, const string &line, bool &quitRequested)
 {
@@ -240,6 +302,81 @@ bool runCommand(DebugSession &s, const string &line, bool &quitRequested)
     //      help       -> printHelp
     //      quit, exit -> set quitRequested = true
     // 4. For anything else, or a wrong number of words, print "unknown command" and the help text, and return false.
+    Token tokens[4];
+    int tokCt = tokenizeLine(line, tokens, 4);
+    if(tokens[0].text == "ttdb"){
+        shift_left(tokens, tokCt);
+    }
+    if(tokens[0].text == "start"){
+        if(tokCt == 1 || tokCt > 2) {
+            cout << "\nunknown command.";
+            printHelp();
+            return false;
+        }
+        cmdStart(s, tokens[1].text);
+        return true;
+    }
+    if(tokens[0].text == "next"){
+        if(tokCt > 1) {
+            cout << "\nunknown command.";
+            printHelp();
+            return false;
+        }
+        cmdNext(s);
+        return true;
+    }
+    if(tokens[0].text == "prv"){
+        if(tokCt > 1) {
+            cout << "\nunknown command.";
+            printHelp();
+            return false;
+        }
+        cmdPrv(s);
+        return true;
+    }
+    if(tokens[0].text == "jmp"){
+        if(tokCt > 3 || tokCt < 3) {
+            cout << "\nunknown command.";
+            printHelp();
+            return false;
+        }
+        try{
+            int n = stoi(tokens[2].text);
+            if(n <= 0){
+                cout << "\nunknown command.";
+                printHelp();
+                return false;
+            }
+            if(tokens[1].text == "next"){
+                cmdJmpNext(s, n);
+            }
+            else if(tokens[1].text == "prv"){
+                cmdJmpPrv(s, n);
+            }
+            else{
+                cout << "\nunknown command.";
+                printHelp();
+                return false;
+            }
+        }
+        catch(...){
+            cout << "\nunknown command.";
+            printHelp();
+            return false;
+        }
+        return true;
+    }
+    if(tokens[0].text == "help"){
+        printHelp();
+        return true;
+    }
+    if(tokens[0].text == "quit" || tokens[0].text == "exit"){
+        quitRequested = true;
+        return true;
+    }
+    cout << "\nunknown command.";
+    printHelp();
+    return false;
 }
 int main(int argc, char *argv[])
 {
@@ -253,5 +390,6 @@ int main(int argc, char *argv[])
     //
     // After the loop: closeSession(session) and return 0.
     // Never exit the loop because of an error. Only quit or the end of the input leaves it.
+    return 0;
 
 }
