@@ -15,3 +15,6 @@ Minor changes/Code improvements
 %th Session
 Date : 16 October
 Final Code Review, Potential error fixes
+6th Session
+Date : 20 October
+Queue Implementation, and other functions implemented, Open/Close TBDG, readSnapshot, moveBy functions. helper functions added.

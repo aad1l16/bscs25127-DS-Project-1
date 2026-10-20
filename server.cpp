@@ -17,11 +17,10 @@
 #include <sys/socket.h>
 #include <cstdint>
 #include <cstdio>
+#include "helper.h"
 using namespace std;
 
 // ---- Constants ----
-const int32_t MAX_VARS_PER_FRAME = 16;
-const int32_t MAX_STACK_DEPTH = 64;
 const int32_t MAX_FUNCS = 128;
 const int32_t MAX_TOKENS = MAX_VARS_PER_FRAME + 2; // kW + func_name + upto 16 params/args
 const int32_t MAX_PATCHES = MAX_FUNCS * 4;
@@ -162,33 +161,7 @@ public:
     }
 };
 
-// Core structs
-struct Variable
-{
-    string name;
-    int32_t value;
-};
-struct Frame
-{
-    string func_name;
-    int32_t argc;
-    Variable argv[MAX_VARS_PER_FRAME];
-    int32_t returnLine;
-    Variable locals[MAX_VARS_PER_FRAME];
-    int32_t localCount;
-};
-struct Snapshot
-{
-    Frame callStack[MAX_STACK_DEPTH];
-    int32_t stackDepth;
-};
-struct TTDBHeader
-{
-    char magic[4]; // "TTDB"
-    int32_t version;
-    int32_t stepCount;
-    int64_t indexOffset;
-};
+
 void writeHeader(FILE* f, const TTDBHeader& h)
 {
     fwrite(h.magic, 1, 4, f);
@@ -197,20 +170,6 @@ void writeHeader(FILE* f, const TTDBHeader& h)
     fwrite(&h.indexOffset, sizeof(int64_t), 1, f);
     // placeholder for other two data members
 }
-
-// resolve.bin - bookkeeping
-struct FuncEntry
-{
-    string funcName;
-    int64_t byteOffsetInResolveBin; // where this function's FUNC header record sits
-};
-struct PendingPatch
-{
-    int64_t byteOffsetOfOffsetField; // where in resolve.bin to seek back and overwrite
-    string targetFuncName;
-};
-
-
 
 // PASS 0x0: READING source.bin + VALIDITY CHECK
 bool readSourceLine(ifstream& in, string& out)
@@ -632,6 +591,7 @@ void writeTdbg(Timeline& timeline, const char* tdbgPath)
                 fwrite(currFrame.argv[j].name.c_str(), sizeof(char), len, file);
                 fwrite(&currFrame.argv[j].value, sizeof(int32_t), 1, file);
             }
+            fwrite(&currFrame.returnLine, sizeof(int32_t), 1, file);
             fwrite(&currFrame.localCount, sizeof(int32_t), 1, file);
             for (int j = 0; j < currFrame.localCount; j++) {
                 len = currFrame.locals[j].name.length();
