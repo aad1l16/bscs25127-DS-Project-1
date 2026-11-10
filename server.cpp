@@ -372,11 +372,11 @@ Snapshot* buildSnapshot(Stack<Frame>& callStack)
     return ret;
 }
 Variable* findVariable(Frame* currFrame, const string& varName) {
-    for (int i = 0; i < currFrame->localCount; i++) {
-        if (currFrame->locals[i].name == varName) return &currFrame->locals[i];
-    }
     for (int i = 0; i < currFrame->argc; i++) {
         if (currFrame->argv[i].name == varName) return &currFrame->argv[i];
+    }
+    for (int i = 0; i < currFrame->localCount; i++) {
+        if (currFrame->locals[i].name == varName) return &currFrame->locals[i];
     }
     return nullptr;
     //Helper function to check whether the variable being worked on exists. If it does returns the pointer to the variable else returns nullptr.
@@ -550,7 +550,7 @@ void writeTdbg(Timeline& timeline, const char* tdbgPath)
                 fwrite(currFrame.argv[j].name.c_str(), sizeof(char), len, file);
                 fwrite(&currFrame.argv[j].value, sizeof(int32_t), 1, file);
             }
-            fwrite(&currFrame.returnLine, sizeof(int32_t), 1, file);
+            fwrite(&currFrame.returnLine, sizeof(int64_t), 1, file);
             fwrite(&currFrame.localCount, sizeof(int32_t), 1, file);
             for (int j = 0; j < currFrame.localCount; j++) {
                 len = currFrame.locals[j].name.length();

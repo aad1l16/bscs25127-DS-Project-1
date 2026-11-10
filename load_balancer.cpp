@@ -73,6 +73,22 @@ bool sendError(int sock, const string &message)
 {
     // Reply format: [status: 1 byte][payload until close][checksum: 4 bytes].
     // For an error: send one byte with value 1, then the message text. 
+    char status = 1;
+    uint32_t crc = initCrc32();
+    crc = updateCrc32(crc, &status, 1);
+    crc = updateCrc32(crc, message.data(), message.size());
+    uint32_t finalCrc = finalizeCrc32(crc);
+
+    if(!sendAll(sock, &status, 1)){
+        return false;
+    }
+    if(!sendAll(sock, message.data(), message.size())){
+        return false;
+    }
+    if(!sendAll(sock, reinterpret_cast<const char*>(&finalCrc), sizeof(finalCrc))){
+        return false;
+    }
+    return true;
 }
 int createListenSocket(int port)
 { 
@@ -80,11 +96,59 @@ int createListenSocket(int port)
     // set SO_REUSEADDR so we can restart the load balancer right away.
     // bind() to the port on any address, then listen(LISTEN_BACKLOG).
     // If bind or listen fails, print the error and exit, because without this socket we cannot work.
+    int sock = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if(sock < 0){
+        perror("socket creation failure.");
+        exit(EXIT_FAILURE);
+    }
+
+    int opt = 1;
+    if(setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0){
+        perror("set SO_REUSEADDR failed.");
+        close(sock);
+        exit(EXIT_FAILURE);
+    }
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = INADDR_ANY;
+
+    if(bind(sock, (sockaddr*)&addr, sizeof(addr)) < 0){
+        perror("bind failed.");
+        close(sock);
+        exit(EXIT_FAILURE);
+    }
+
+    if(listen(sock, LISTEN_BACKLOG) < 0){
+        perror("listen failed.");
+        close(sock);
+        exit(EXIT_FAILURE);
+    }
+
+    return sock;
 }
 int connectToServer(const char *host, int port)
 {
     // Create a TCP socket (SOCK_CLOEXEC) and connect it to host:port.
     // Return the socket, or -1 if the connection fails 
+    int sock = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if(sock < 0) return -1;
+
+    sockaddr_in serverAddr{};
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(port);
+
+    if(inet_pton(AF_INET, host, &serverAddr.sin_addr) <= 0){
+        close(sock);
+        return -1;
+    }
+
+    if(connect(sock, (sockaddr*)&serverAddr, sizeof(serverAddr)) < 0){
+        close(sock);
+        return -1;
+    }
+    return sock;
 }
 
 // =============================================================================================
@@ -98,6 +162,8 @@ bool startServer(int port)
     //   Example: "./server 5001 &"
     // Call system() with it.
     // Return true if system() returned 0, otherwise false.
+    string stUp = string(SERVER_PATH) + " " + to_string(port) + " &";
+    return system(stUp.c_str()) == 0;
 }
 int connectToServerWithWakeup()
 {
@@ -105,6 +171,24 @@ int connectToServerWithWakeup()
     // 2. Otherwise call startServer(). If it fails, return -1.
     // 3. Try connectToServer() up to STARTUP_MAX_ATTEMPTS times 
     // 4. Return the first working socket, or -1 if the server never came up.
+    int sock = connectToServer(serverHost.c_str(), serverPort);
+    if(sock >= 0){
+        return sock;
+    }
+
+    if(!startServer(serverPort)){
+        return -1;
+    }
+
+    for(int i = 0; i < STARTUP_MAX_ATTEMPTS; i++){
+        usleep(STARTUP_POLL_INTERVAL_MS * 1000);
+        sock = connectToServer(serverHost.c_str(), serverPort);
+        if(sock >= 0){
+            return sock;
+        }
+    }
+
+    return -1;
 }
 
 
@@ -123,6 +207,39 @@ void relayOneClient(ClientInfo &c)
     // 5. Server -> client: repeat recv() from serverSock and sendAll() to clientSock.
     //    Stop when recv() returns 0 (the server sent its whole reply and closed) or fails.
     // 6. Close both sockets.
+
+    int serverSock = connectToServerWithWakeup();
+    if(serverSock < 0){
+        sendError(c.sock, "backend server failed to start");
+        close(c.sock);
+        return;
+    }
+    char* buffer = new char[IO_BUFFER_SIZE];
+    ssize_t bytesRead = recv(c.sock, buffer, IO_BUFFER_SIZE, 0);
+
+    while(bytesRead > 0){
+        if(!sendAll(serverSock, buffer, bytesRead)){
+            close(serverSock);
+            close(c.sock);
+            delete[] buffer;
+            return;
+        }
+        bytesRead = recv(c.sock, buffer, IO_BUFFER_SIZE, 0);
+    }
+
+    shutdown(serverSock, SHUT_WR);
+
+    bytesRead = recv(serverSock, buffer, IO_BUFFER_SIZE, 0);
+
+    while(bytesRead > 0){
+        if(!sendAll(c.sock, buffer, bytesRead)){
+            break;
+        }
+        bytesRead = recv(serverSock, buffer, IO_BUFFER_SIZE, 0);
+    }
+    close(serverSock);
+    close(c.sock);
+
 }
 
 
@@ -141,6 +258,33 @@ void acceptLoop(int listenSock)
     //   Otherwise enqueue the client socket.
     // Never wait for the server here, so new clients are always accepted quickly.
     // If accept() fails, print the error and keep going (do not end the thread).
+    while(flag){
+        sockaddr_in clientAddr{};
+        socklen_t addrLen = sizeof(clientAddr);
+
+        int clientSock = accept(listenSock, (sockaddr*)&clientAddr, &addrLen);
+        if(clientSock < 0){
+            if(errno == EINTR) continue;
+            perror("accept failed");
+            continue;
+        }
+
+        ClientInfo c;
+        c.sock = clientSock;
+        char IP[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &(clientAddr.sin_addr), IP, INET_ADDRSTRLEN);
+        c.address = string(IP);
+        c.port = ntohs(clientAddr.sin_port);
+        c.arrivedAt = time(nullptr);
+        lock_guard<mutex> lock(queueMutex);
+        if(pendingClients.size() >= MAX_PENDING_CLIENTS){
+            sendError(clientSock, "server busy, try again later");
+            close(clientSock);
+        }
+        else{
+            pendingClients.enqueue(c);
+        }
+    }
 }
 void dispatcherLoop()
 {
@@ -148,4 +292,18 @@ void dispatcherLoop()
     // Repeat:
     //   Lock queueMutex, take ONE client out of the queue if there is one, unlock.
     //   If we got a client: call relayOneClient(). The next client is taken out of the queue only after this one is finished.
+    while(flag){
+        ClientInfo c;
+        bool hasClient = false;
+        {
+            lock_guard<mutex> lock(queueMutex);
+            if(!pendingClients.isEmpty()){
+                c = pendingClients.dequeue();
+                hasClient = true;
+            }
+        }
+        if(hasClient){
+            relayOneClient(c);
+        }
+    }
 }
