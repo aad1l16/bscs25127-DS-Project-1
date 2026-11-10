@@ -53,64 +53,6 @@ int serverPort = 5001;
 
 // ---- Queue: here it holds client sockets (int). ----
 // Implement it yourself, do not use std::queue.
-template <typename T>
-class Queue
-{
-    struct Node
-    {
-        T data;
-        Node *next;
-    };
-    Node *front, *rear;
-    int count;
-
-
-public:
-    // Implement these functions:
-    Queue()
-    {
-        front = rear = nullptr;
-        count = 0;
-    }
-    ~Queue()
-    {
-        while(!isEmpty()){
-            dequeue();
-        }
-    }
-    void enqueue(const T &val)
-    {
-        Node* node = new Node(val);
-        if(!front){
-            front = rear = node;
-        }
-        else{
-            rear->next = node;
-            rear = node;
-        }
-        count++;
-    }
-    T dequeue()
-    {
-        if(!front) throw underflow_error("Queue is empty.");
-        Node* node = front;
-        front = front->next;
-        if(!front){
-            front = rear = nullptr;
-        }
-        count--;
-        delete node;
-
-    }
-    bool isEmpty()
-    {
-        return count == 0;
-    }
-    int size()
-    {
-        return count;
-    }
-};
 
 struct ClientInfo
 {
@@ -127,12 +69,6 @@ sig_atomic_t flag = 1;
 
 
 // ---- Basic socket helpers ----
-bool sendAll(int sock, const char *buf, size_t n) 
-{
-    // Reply format: [status: 1 byte][sending_material][checksum: 4 bytes].
-    // send() may send fewer bytes than asked for, so keep calling it until all n bytes are sent.
-    
-}
 bool sendError(int sock, const string &message)
 {
     // Reply format: [status: 1 byte][payload until close][checksum: 4 bytes].

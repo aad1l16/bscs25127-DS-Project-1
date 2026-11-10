@@ -22,6 +22,8 @@
 #include <signal.h>
 #include <vector>
 #include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include "helper.h"
 using namespace std;
 
@@ -57,27 +59,75 @@ bool recvAll(int sock, char *buf, size_t n)
 {
     // recv() can return fewer bytes than asked for, so keep calling it until exactly n bytes are read.
     // Return false if the connection closes or fails before n bytes arrive.
-    return false;
-}
-bool sendAll(int sock, const char *buf, size_t n)
-{
-    // send() can send fewer bytes than asked for, so keep calling it until all n bytes are sent.
-    // Use the flag MSG_NOSIGNAL. Return false if the connection fails.
-    return false;
+    size_t ct = 0;
+    while(ct < n){
+        int temp = recv(sock, buf + ct, n - ct, 0);
+        if(temp <= 0) return false;
+        ct += (size_t)temp;
+    }
+    return true;    
 }
 
 int connectToHost(const char *host, int port)
 {
     // Create a TCP socket and connect it to host:port.
     // Return the socket, or -1 if the connection fails.
-    return false;
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if(sock < 0) return -1;
+    sockaddr_in serverAddr{};
+
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(port);
+
+    if(inet_pton(AF_INET, host, &serverAddr.sin_addr) <= 0){
+        close(sock);
+        return -1;
+    }
+
+    if(connect(sock, (sockaddr*)&serverAddr, sizeof(serverAddr)) < 0){
+        close(sock);
+        return -1;
+    }
+
+    return sock;
 }
 bool uploadSource(int sock, const char *sourcePath)
 {
     // have to do checksum and then send
     // When the file is finished, call shutdown(sock, SHUT_WR). This is how the server knows the string is complete.
     // Return false if the file cannot be opened or any send fails.
-    return false;
+    FILE* file = fopen(sourcePath, "rb");
+    if(!file) return false;
+    char status = 0;
+    if(!sendAll(sock, &status, 1)){
+        fclose(file);
+        return false;
+    }
+    uint32_t crc = initCrc32();
+    crc = updateCrc32(crc, &status, 1);
+    char* buffer = new char[IO_BUFFER_SIZE];
+    size_t bytesRead = fread(buffer, sizeof(char), IO_BUFFER_SIZE, file);
+    while(bytesRead > 0){
+        crc = updateCrc32(crc, buffer, bytesRead);
+        if(!sendAll(sock, buffer, bytesRead)){
+            fclose(file);
+            delete[] buffer;
+            return false;
+        }
+
+        bytesRead = fread(buffer, sizeof(char), IO_BUFFER_SIZE, file);
+    }
+    fclose(file);
+    delete[] buffer;
+
+    uint32_t finalCrc = finalizeCrc32(crc);
+
+    if(!sendAll(sock, reinterpret_cast<const char*>(&finalCrc), sizeof(finalCrc))){
+        return false;
+    }
+    shutdown(sock, SHUT_WR);
+
+    return true;
 }
 bool receiveResponse(int sock, const char *outTdbgPath, string &outError)
 {
@@ -86,7 +136,72 @@ bool receiveResponse(int sock, const char *outTdbgPath, string &outError)
     // Status 1: collect the payload into outError. Status 0: write the payload to the file.
     // At the end call verify(). If it fails, delete the file, set outError to
     // "checksum mismatch, response corrupted" and return false.
-    return false;
+    char status = 0;
+    if(!recvAll(sock, &status, 1)){
+        return false;
+    }
+    uint32_t crc = initCrc32();
+    crc = updateCrc32(crc, &status, 1);
+
+    vector<char> payload;
+    Queue<char> trailerWindow;
+    char* buffer = new char[IO_BUFFER_SIZE];
+    int byteaReceived = recv(sock, buffer, IO_BUFFER_SIZE, 0);
+
+    while(byteaReceived > 0){
+        for(int i = 0; i < byteaReceived; i++){
+            char currByte = buffer[i];
+            if(trailerWindow.size() == 4){
+                char oldestByte = trailerWindow.dequeue();
+                payload.push_back(oldestByte);
+                crc = updateCrc32(crc, &oldestByte, 1);
+            }
+            trailerWindow.enqueue(currByte);
+        }
+        byteaReceived = recv(sock, buffer, IO_BUFFER_SIZE, 0);
+    }
+
+    delete[] buffer;
+
+    if(trailerWindow.size() != 4){
+        outError = "checksum mismatch, response corrupted";
+        return false;
+    }
+    uint32_t receivedCrc = 0;
+    char* crcPtr = reinterpret_cast<char*>(&receivedCrc);
+    for(int i = 0; i < 4; i++){
+        crcPtr[i] = trailerWindow.dequeue();
+    }
+
+    uint32_t calcCrc = finalizeCrc32(crc);
+    if(calcCrc != receivedCrc){
+        outError = "checksum mismatch, response corrupted";
+        return false;
+    }
+
+    if(status == 0){
+        FILE* file = fopen(outTdbgPath, "wb");
+        if(!file){
+            outError = "Failed to open output file.";
+            return false;
+        }
+        if(!payload.empty()){
+            if(fwrite(payload.data(), sizeof(char), payload.size(), file) != payload.size()){
+                fclose(file);
+                remove(outTdbgPath);
+                outError = "Failed to write to output file.";
+                return false;
+            }
+        }
+        fclose(file);
+        return true;
+    }
+    else{
+        if(!payload.empty()){
+            outError = string(payload.data(), payload.size());
+        }
+        return false;
+    }
 }
 
 // =============================================================================================
@@ -229,6 +344,47 @@ bool cmdStart(DebugSession &s, const string &sourcePath)
     // s.active_flag = true;
     // showCurrent(s);
     // return true;
+    int sock = connectToHost(LB_HOST.c_str(), LB_PORT);
+    if(sock < 0){
+        cout << "\nFailed to connect to the server.\n";
+        return false;
+    }
+
+    if(!uploadSource(sock, sourcePath.c_str())){
+        cout << "\nFailed to upload source file.\n";
+        close(sock);
+        return false;
+    }
+
+    string outError;
+
+    bool recv = receiveResponse(sock, TDBG_FILE, outError);
+    close(sock);
+    if(!recv){
+        if(!outError.empty()){
+            cout << endl << outError << endl;
+        }
+        else{
+            cout << "\nFailed to receive a response.\n";
+        }
+        return false;
+    }
+
+    TdbgReader temp;
+    if(!openTdbg(TDBG_FILE, temp)){
+        cout << "\nServer sent a damaged .tdbg file.\n";    
+        closeTdbg(temp);
+        return false;
+    }
+
+    if(s.active_flag){
+        closeTdbg(s.reader);
+    }
+    s.reader = temp;
+    s.currentStep = 0;
+    s.active_flag = true;
+    showCurrent(s);
+    return true;
 }
 bool cmdNext(DebugSession &s) {
     return moveBy(s, 1);
@@ -390,6 +546,34 @@ int main(int argc, char *argv[])
     //
     // After the loop: closeSession(session) and return 0.
     // Never exit the loop because of an error. Only quit or the end of the input leaves it.
-    return 0;
 
+    if(argc >= 2){
+        LB_HOST = argv[1];
+    }
+    if(argc >= 3){
+        LB_PORT = atoi(argv[2]);
+    }
+    DebugSession session;
+    initSession(session);
+
+    cout << "\nWelcome to the Time-Travel Debugger (TTDB)\n";
+    printHelp();
+    cout << endl;
+
+    string line;
+    bool quit = false;
+
+    while(!quit){
+        cout << PROMPT;
+        if(!getline(cin, line)){
+            break;
+        }
+        if(line.empty()){
+            continue;
+        }
+        runCommand(session, line, quit);
+    }
+
+    closeSession(session);
+    return 0;
 }

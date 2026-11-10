@@ -21,3 +21,5 @@ Queue Implementation, and other functions implemented, Open/Close TBDG, readSnap
 7th Session
 Date : 21 October
 Session 7 : Implemented Client.cpp functions, showCurrent, printSnapshot, closeSession, initSession, runCommand. Updated helper.h
+Date : 10 November
+Session 8: Completed implementation of all client.cpp functions, other minor changes to functions where possible errors could occur, fixed queue, updated helper.h
