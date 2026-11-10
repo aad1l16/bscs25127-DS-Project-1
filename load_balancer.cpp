@@ -47,7 +47,7 @@ const int MAX_PENDING_CLIENTS = 8;         // clients allowed to wait in our que
 const int STARTUP_MAX_ATTEMPTS = 50;       // after starting the server, how many times we try to connect
 const int STARTUP_POLL_INTERVAL_MS = 100;  // wait between those tries (50 x 100 ms = 5 seconds in total)
 int lbPort = 5000;
-string serverHost = "127.0.0.0";
+string serverHost = "127.0.0.1";
 int serverPort = 5001;
 
 
@@ -69,27 +69,6 @@ sig_atomic_t flag = 1;
 
 
 // ---- Basic socket helpers ----
-bool sendError(int sock, const string &message)
-{
-    // Reply format: [status: 1 byte][payload until close][checksum: 4 bytes].
-    // For an error: send one byte with value 1, then the message text. 
-    char status = 1;
-    uint32_t crc = initCrc32();
-    crc = updateCrc32(crc, &status, 1);
-    crc = updateCrc32(crc, message.data(), message.size());
-    uint32_t finalCrc = finalizeCrc32(crc);
-
-    if(!sendAll(sock, &status, 1)){
-        return false;
-    }
-    if(!sendAll(sock, message.data(), message.size())){
-        return false;
-    }
-    if(!sendAll(sock, reinterpret_cast<const char*>(&finalCrc), sizeof(finalCrc))){
-        return false;
-    }
-    return true;
-}
 int createListenSocket(int port)
 { 
     // Create a TCP socket with SOCK_CLOEXEC(flag).
@@ -305,5 +284,22 @@ void dispatcherLoop()
         if(hasClient){
             relayOneClient(c);
         }
+        else{
+            usleep(10000);
+        }
     }
+}
+
+int main(int argc, char* argv[]){
+    if (argc >= 2) lbPort = atoi(argv[1]);
+    if (argc >= 3) serverPort = atoi(argv[2]);
+    int listenSock = createListenSocket(lbPort);
+    
+    thread acceptor(acceptLoop, listenSock);
+
+    dispatcherLoop();
+
+    if (acceptor.joinable()) acceptor.join();
+    close(listenSock);
+    return 0;
 }

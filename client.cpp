@@ -33,7 +33,7 @@ const char *PROMPT = "ttdb> ";
 const int IO_BUFFER_SIZE = 64 * 1024;     // fixed buffer for streaming files to and from the socket
 const char *TDBG_FILE = "ttdb_last.tdbg"; // where the downloaded .tdbg is saved
 const int MAX_JUMP = 1000000000;          // biggest n accepted by jmp
-string LB_HOST = "127.0.0.0";
+string LB_HOST = "127.0.0.1";
 int LB_PORT = 5000;
 
 
@@ -98,13 +98,7 @@ bool uploadSource(int sock, const char *sourcePath)
     // Return false if the file cannot be opened or any send fails.
     FILE* file = fopen(sourcePath, "rb");
     if(!file) return false;
-    char status = 0;
-    if(!sendAll(sock, &status, 1)){
-        fclose(file);
-        return false;
-    }
     uint32_t crc = initCrc32();
-    crc = updateCrc32(crc, &status, 1);
     char* buffer = new char[IO_BUFFER_SIZE];
     size_t bytesRead = fread(buffer, sizeof(char), IO_BUFFER_SIZE, file);
     while(bytesRead > 0){
@@ -153,8 +147,8 @@ bool receiveResponse(int sock, const char *outTdbgPath, string &outError)
             char currByte = buffer[i];
             if(trailerWindow.size() == 4){
                 char oldestByte = trailerWindow.dequeue();
-                payload.push_back(oldestByte);
                 crc = updateCrc32(crc, &oldestByte, 1);
+                payload.push_back(oldestByte);
             }
             trailerWindow.enqueue(currByte);
         }
@@ -260,7 +254,7 @@ Snapshot *readSnapshotAt(TdbgReader &r, int32_t step)
             fread(&s->callStack[i].argv[j].name[0], sizeof(char), len, file);
             fread(&s->callStack[i].argv[j].value, sizeof(int32_t), 1, file);
         }
-        fread(&s->callStack[i].returnLine, sizeof(int32_t), 1, file);
+        fread(&s->callStack[i].returnLine, sizeof(int64_t), 1, file);
         fread(&s->callStack[i].localCount, sizeof(int32_t), 1, file);
         for(int j = 0; j < s->callStack[i].localCount; j++){
             fread(&len, sizeof(int32_t), 1, file);
@@ -419,6 +413,7 @@ void printSnapshot(int32_t step, int32_t totalSteps, const Snapshot &s)
         for(int j = 0; j < s.callStack[i].localCount; j++){
             cout << endl << j + 1 << ". " << s.callStack[i].locals[j].name << " " << s.callStack[i].locals[j].value; 
         }
+        cout << endl;
     }
 }
 void printHelp()

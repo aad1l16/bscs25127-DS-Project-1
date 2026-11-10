@@ -199,3 +199,25 @@ public:
         return count;
     }
 };
+
+inline bool sendError(int sock, const string &message)
+{
+    // Reply format: [status: 1 byte][payload until close][checksum: 4 bytes].
+    // For an error: send one byte with value 1, then the message text. 
+    char status = 1;
+    uint32_t crc = initCrc32();
+    crc = updateCrc32(crc, &status, 1);
+    crc = updateCrc32(crc, message.data(), message.size());
+    uint32_t finalCrc = finalizeCrc32(crc);
+
+    if(!sendAll(sock, &status, 1)){
+        return false;
+    }
+    if(!sendAll(sock, message.data(), message.size())){
+        return false;
+    }
+    if(!sendAll(sock, reinterpret_cast<const char*>(&finalCrc), sizeof(finalCrc))){
+        return false;
+    }
+    return true;
+}

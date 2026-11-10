@@ -25,3 +25,5 @@ Date : 10 November
 Session 8 : Completed implementation of all client.cpp functions, other minor changes to functions where possible errors could occur, fixed queue, updated helper.h
 Date : 10 November
 Session 9 : Completed implementation of load_balancer.cpp, minor fixes in server.cpp
+Date : 11 November
+Session 10 : Completed whole project, completed main of server.cpp, minor bug fixes

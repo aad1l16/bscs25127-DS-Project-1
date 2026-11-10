@@ -15,6 +15,8 @@
 #include <fstream>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <cstdint>
 #include <cstdio>
 #include "helper.h"
@@ -577,11 +579,76 @@ void writeTdbg(Timeline& timeline, const char* tdbgPath)
     delete[] indexArr;
 }
 // main section
-int32_t main()
+int32_t main(int argc, char* argv[])
 {
+    int port = 5001;
+    if(argc > 1){
+        port = atoi(argv[1]); 
+    }
+
+    int listenSock = socket(AF_INET, SOCK_STREAM, 0);
+    if(listenSock < 0){
+        perror("server socket creation failed");
+        return 1;
+    }
+
+    int opt = 1;
+    
+    setsockopt(listenSock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    sockaddr_in serverAddr{};
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(port);
+    serverAddr.sin_addr.s_addr = INADDR_ANY;
+
+    if(bind(listenSock, (sockaddr*)&serverAddr, sizeof(serverAddr)) < 0){
+        close(listenSock);
+        return 1;
+    }
+
+    if(listen(listenSock, 1) < 0){
+        close(listenSock);
+        return 1;
+    }
+
+    sockaddr_in clientAddr{};
+    socklen_t clientLen = sizeof(clientAddr);
+    int clientSock = accept(listenSock, (sockaddr*)&clientAddr, &clientLen);
+    if (clientSock < 0) {
+        close(listenSock);
+        return 1;
+    }
+    FILE* sourceFile = fopen("source.bin", "wb");
+    if (!sourceFile) {
+        close(clientSock);
+        close(listenSock);
+        return 1;
+    }
+
+    Queue<char> trailerWindow;
+    char buffer[IO_BUFFER_SIZE];
+    ssize_t bytesRead;
+
+    while ((bytesRead = recv(clientSock, buffer, IO_BUFFER_SIZE, 0)) > 0) {
+        for (ssize_t i = 0; i < bytesRead; i++) {
+            char currByte = buffer[i];
+            if (trailerWindow.size() == 4) {
+                char oldestByte = trailerWindow.dequeue();
+                fwrite(&oldestByte, sizeof(char), 1, sourceFile);
+            }
+            trailerWindow.enqueue(currByte);
+        }
+    }
+    fclose(sourceFile);
+    
+
     if (!validateProgram("source.bin"))
     {
         // send an error response instead of a .tdbg file
+        sendError(clientSock, "validation failed");
+        remove("source.bin");
+        close(clientSock);
+        close(listenSock);
         return 1;
     }
 
@@ -593,11 +660,32 @@ int32_t main()
 
         writeTdbg(timeline, "session.tdbg");
 
-        return 0;
+        FILE* file = fopen("session.tdbg", "rb");
+        if(file){
+            char status = 0;
+            uint32_t crc = initCrc32();
+            sendAll(clientSock, &status, 1);
+            crc = updateCrc32(crc, &status, 1);
+            bytesRead = fread(buffer, sizeof(char), IO_BUFFER_SIZE, file);
+
+            while(bytesRead > 0){
+                sendAll(clientSock, buffer, bytesRead);
+                crc = updateCrc32(crc, buffer, bytesRead);
+                bytesRead = fread(buffer, sizeof(char), IO_BUFFER_SIZE, file);
+            }
+            fclose(file);
+
+            uint32_t finalCrc = finalizeCrc32(crc);
+            sendAll(clientSock, reinterpret_cast<const char*>(&finalCrc), sizeof(finalCrc));
+        }
     }
     catch (const std::exception& e) {
-        cout << e.what() << endl;
-        writeTdbg(timeline, "session.tdbg");
-        return -1;
+        sendError(clientSock, e.what());
     }
+    remove("source.bin");
+    remove("resolve.bin");
+    remove("session.tdbg");
+    close(clientSock);
+    close(listenSock);
+    return 0;
 }
